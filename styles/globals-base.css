@@ -1,0 +1,68 @@
+:root {
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  
+  /* Brand Colors */
+  --bg-dark: #080a11;
+  --bg-surface: #10131c;
+  --bg-surface-hover: #161a25;
+  --bg-surface-alt: #12141b;
+  
+  --border-color: #1c2035;
+  --border-focus: #2d3752;
+  
+  --text-main: #e5e7eb;
+  --text-muted: #9ca3af;
+  --text-dark: #6b7280;
+  
+  --accent-blue: #4f7df5;
+  --accent-indigo: #6366f1;
+  
+  /* Metric Colors */
+  --color-cpu: #6366f1;
+  --color-mem: #22c55e;
+  --color-net: #f59e0b;
+  --color-disk: #ec4899;
+  
+  /* Status Colors */
+  --color-error: #ef4444;
+  --color-warn: #eab308;
+  --color-info: #3b82f6;
+  --color-success: #10b981;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-family);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--bg-dark);
+  background-image: 
+    radial-gradient(circle at 15% 50%, rgba(79, 125, 245, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at 85% 30%, rgba(99, 102, 241, 0.06) 0%, transparent 40%),
+    radial-gradient(circle at 50% 100%, rgba(34, 197, 94, 0.03) 0%, transparent 50%);
+  background-attachment: fixed;
+  background-size: cover;
+  background-position: center;
+  color: var(--text-main);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-dark); 
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color); 
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-focus); 
+}

@@ -1,119 +1,224 @@
 # Performance-Critical Data Visualization Dashboard
 
-A frontend R&D exercise in rendering large multi-series time-series datasets
-(up to 500,000 points) in the browser without dropping frames, using no
-charting library.
+## Project overview
 
-## Live features
+A **Next.js 14 App Router** browser application that generates and visualizes large multi-series time-series datasets (up to **500,000 points**) without Chart.js, D3, Recharts, or similar libraries.
 
-- Dataset size selector (10k → 500k synthetic points, random-walk generated)
-- Four independent series (CPU / Memory / Network / Disk I/O), each rendered
-  as its own line with its own color and legend entry
-- Category filter (view one series or all four overlaid) + text filter on the table
-- **Raw vs Optimized toggle** — Raw skips the Web Worker/LTTB pipeline entirely and
-  hands the chart the full per-category dataset directly; Optimized runs the normal
-  worker → LTTB → canvas pipeline. Both are timed with `performance.now()` around
-  the actual draw call, and once you've viewed both modes a comparison card shows
-  the real measured render time and the speedup multiplier — no numbers are
-  hardcoded or estimated. A visible warning appears in Raw mode above ~100k points
-  since it can genuinely affect responsiveness on slower devices
-- A hand-rolled Canvas2D multi-line chart with a per-series hover tooltip
-- A virtualized data table that scrolls smoothly regardless of row count
-- A live FPS counter (top-right) and per-stage timing (generation, downsample) so
-  the performance claims are measurable, not asserted
+The focus is browser-side performance: Web Workers, LTTB downsampling, typed arrays with transferable `ArrayBuffer`s, Canvas2D rendering, and a virtualized data table. Metrics shown in the UI (canvas draw time, worker time, FPS, JS heap) come from **real measurements** in the current browser session — never fabricated placeholders.
 
-## Key architectural decisions
+## Key features
 
-### 1. Per-category typed arrays, not one flat sorted array (`src/lib/dataGenerator.ts`)
-**This fixes a real bug caught during review.** The dataset generator originally
-produced all four categories, then sorted the *entire* array by timestamp. All
-categories share the same timestamp range, so the sorted array ends up
-interleaving CPU/Memory/Network/Disk points almost every step. Charting "All
-categories" straight from that array draws one line that zig-zags between
-unrelated series — it looks like a single noisy signal instead of four
-distinct system metrics.
+- Dataset sizes: **10K / 50K / 100K / 250K / 500K** (stress-test shortcuts for 10K / 50K / 100K / 500K)
+- Metric-specific synthetic generators (CPU, Memory, Network, Disk I/O)
+- **Raw vs Optimized** rendering modes with genuine canvas timing capture
+- Chart types: **Line**, **Bar**, **Scatter**, **Heatmap** (all Canvas2D)
+- Web Worker + **LTTB** for Optimized line (and as input LOD for other types)
+- Typed arrays + transferable buffers
+- Virtualized Data Explorer
+- Live FPS HUD (`requestAnimationFrame`) and per-mode FPS samples
+- Browser JS heap display via `performance.memory` when available
+- **100ms** simulated real-time stream
+- Aggregation: **none / 1m / 5m / 1h** (distinct from LTTB)
+- Time-range filter: All / 5m / 15m / 1h / 6h
+- Zoom (scroll) and pan (drag) on the canvas
+- App Router `loading` / `error` boundaries
+- Minimal sample API at `/api/data` (does **not** process the 500K visualization on the server)
 
-The fix: `groupByCategoryTyped()` splits the flat array into one
-`{timestamps: Float64Array, values: Float64Array}` pair per category. The
-chart, the worker requests, and Raw mode are all built from this grouped
-structure, so each category is always its own line.
+## Technology stack
 
-### 2. LTTB downsampling, per series (`src/lib/lttb.ts`)
-A chart panel is typically 800–1400px wide, so it can't usefully display more than
-~1,000–1,400 distinct x-positions per line no matter how much data you feed it.
-Rather than sampling every Nth point (which can silently erase spikes/anomalies —
-exactly the data an ops dashboard most needs to show), this uses the
-**Largest-Triangle-Three-Buckets** algorithm, which picks the point in each bucket
-that best preserves the visual shape of the line. Each category's ~125,000 points
-become ~400 points (fewer per-series when 4 lines are overlaid, ~1,200 when
-viewing a single category) that still show every spike.
+| Layer | Choice |
+|--------|--------|
+| Framework | Next.js 14 (App Router) |
+| UI | React 18 + TypeScript |
+| Charts | Custom Canvas2D (no chart libraries) |
+| Workers | Web Worker + LTTB (`workers/dataWorker.ts`) |
+| Styling | CSS (existing dark dashboard theme) |
+| Tooling | `tsc --noEmit`, `next build` |
 
-### 3. Typed arrays + transferable buffers to the Web Worker (`src/workers/dataWorker.ts`)
-The first version sent the full `DataPoint[]` (objects with `timestamp`, `value`,
-a repeated `category` string, and `volume`) to the worker on every request, where
-it was structured-cloned — copied element by element, including the redundant
-strings, across the thread boundary.
+## Architecture overview
 
-This version sends only `Float64Array` pairs, and moves them via postMessage's
-**transfer list** rather than structured clone — ownership of the underlying
-buffer hops to the worker as an O(1) pointer move instead of a copy. The main
-thread keeps the canonical typed arrays (via `.slice()` before transfer) so
-Raw mode and the table still have the original data available. The worker
-downsamples and transfers the *result* back the same way.
-
-### 4. Canvas2D instead of SVG or a chart library
-SVG renders each point as a DOM node — at even a few thousand points this creates real
-GC and layout pressure. Canvas is a single bitmap the browser composites once per frame,
-so render cost is dictated by the (small, downsampled) point count, not the raw dataset
-size. Each series is one `stroke()` call — 4 series overlaid is still just 4 draw calls.
-
-### 5. Virtualized table (`src/components/VirtualTable.tsx`)
-Only rows inside (plus a small overscan around) the visible scroll viewport are mounted
-in the DOM — the DOM node count is constant whether the table has 1,000 or 500,000 rows.
-Scroll position maps directly to a slice index, so there's no dependency on a table
-library.
-
-### 6. Raw vs Optimized comparison (`src/App.tsx`)
-This is the piece that turns "I optimized this" into a measured claim. Toggling to
-Raw bypasses the worker and LTTB entirely and asks Canvas to draw every point per
-category directly; toggling to Optimized runs the normal pipeline. Both paths report
-their real `performance.now()` render duration through the same callback, and the app
-shows both numbers plus the resulting speedup once you've triggered each mode once.
-Switching dataset size or category clears the stored measurements so the comparison
-never mixes numbers from two different runs. Above ~100k raw points a visible warning
-is shown, since drawing that many points with no downsampling can genuinely affect
-responsiveness on slower machines — the toggle is meant to demonstrate the cost, not
-hide it.
-
-One correctness bug worth mentioning in an interview: the chart's min/max calculation
-originally used `Math.min(...points.map(...))`, which spreads the array into function
-arguments — V8 overflows the call stack around ~65k arguments. That's invisible in
-Optimized mode (only a few hundred points per series ever reach it) but breaks
-immediately in Raw mode at 100k+ points. Fixed by computing min/max in a single loop
-instead, across all series' typed arrays.
-
-### 7. Everything is measured, not assumed
-The stats row shows real generation time and worker round-trip time; the FPS HUD proves
-the UI thread stays responsive. Swap "Dataset size" to 500,000 and watch FPS stay flat —
-that's the actual R&D result this exercise is meant to demonstrate.
-
-## Stack
-
-- React 19 + TypeScript + Vite
-- Zero chart/virtualization dependencies — Canvas2D, LTTB, and windowing are
-  implemented directly to keep the surface area small and every performance
-  decision visible/explainable
-
-## Running it
-
-```bash
-npm install
-npm run dev      # local dev server
-npm run build    # production build → dist/
+```
+app/
+  layout.tsx              Root layout + global CSS
+  page.tsx                Redirect → /dashboard
+  dashboard/
+    page.tsx              Server page → client <Dashboard />
+    loading.tsx / error.tsx
+  api/data/route.ts       Tiny sample JSON (100 points)
+components/
+  Dashboard.tsx           Client orchestration, controls, benchmarks
+  CanvasChart.tsx         Line / Bar / Scatter / Heatmap (Canvas2D)
+  VirtualTable.tsx        Windowed row rendering
+  PerfHUD.tsx             Live display-loop FPS
+lib/
+  dataGenerator.ts        Synthetic data + typed grouping
+  lttb.ts                 LTTB downsampling
+  aggregate.ts            Time-bucket aggregation (1m/5m/1h)
+  stream.ts               100ms stream tick + time-range filter
+  chartLod.ts             Bar buckets / scatter LOD / heatmap bins
+workers/
+  dataWorker.ts           LTTB on transferable Float64Arrays
 ```
 
-## Possible extensions (noted, not built, for time reasons)
-- Pan/zoom on the chart with re-downsampling per visible time range
-- IndexedDB-backed dataset for >1M point stress testing without regenerating each time
-- OffscreenCanvas + rendering inside the worker itself, for an even more isolated pipeline
-- Cap Raw mode's point count at extreme dataset sizes instead of only warning
+**Pipeline (Optimized mode):**
+
+`generate / stream → time-range filter → aggregation → Float64Array pairs → Web Worker (LTTB, transferable) → Canvas2D chart type`
+
+**Pipeline (Raw mode):** same filters/aggregation, then typed arrays drawn **without** Worker/LTTB (line path strokes full selected series).
+
+## Setup instructions
+
+```bash
+# From the project root (perf-dashboard/)
+npm install
+```
+
+Requires Node.js 18+ recommended for Next.js 14.
+
+## Development command
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) — root redirects to `/dashboard`.
+
+## Production build / run commands
+
+```bash
+npm run typecheck   # tsc --noEmit
+npx next build      # or: npm run build
+npm start           # serve the production build
+```
+
+## Performance testing instructions
+
+1. Open `/dashboard` in Chrome or Edge (best support for `performance.memory`).
+2. Use **Stress test load** (10K / 50K / 100K / 500K) or the dataset size select.
+3. Enable the series you care about (default: CPU + Memory).
+4. Set **Rendering mode** to **Optimized**, wait for the chart, note **Canvas render** and Worker time.
+5. Switch to **Raw**, wait for a draw, compare **Raw vs Optimized** table (values appear only after each mode has actually drawn).
+6. Optionally start **Live stream (100ms)**, change aggregation / time range / chart type, and observe FPS / heap.
+7. Do **not** treat Live FPS as an “app throughput” score — it is display-refresh–limited (see PERFORMANCE.md).
+
+Unmeasured cells show **“Not measured yet”** until you visit that mode for the current dataset/series/filter config.
+
+## Dataset sizes supported
+
+| Size | Notes |
+|------|--------|
+| 10,000 | Quick iteration |
+| 50,000 | Medium load |
+| 100,000 | Stress; Raw mode warns above this for selected series |
+| 250,000 | Large (selector) |
+| 500,000 | Primary assignment target |
+
+Stress-test buttons cover **10K / 50K / 100K / 500K** using the same generator and render pipeline.
+
+## Chart types
+
+| Type | Behavior |
+|------|----------|
+| **Line** | Existing multi-series stroke path; Optimized uses Worker + LTTB |
+| **Bar** | Mean values in a fixed number of time buckets (not one bar per raw point) |
+| **Scatter** | Real samples with stride LOD (~2500 markers/series max) |
+| **Heatmap** | Real time × value density bins (not a recolored line) |
+
+Selector is on the chart card and actually switches Canvas draw mode over the same `chartSeries` data.
+
+## Web Worker + LTTB explanation
+
+- Each category becomes a `{ timestamps: Float64Array, values: Float64Array }` pair.
+- Copies are **transferred** to `workers/dataWorker.ts` via `postMessage(..., [buffer, buffer])` (zero-copy ownership handoff).
+- The worker runs **Largest-Triangle-Three-Buckets (LTTB)** to a per-series threshold (~400–1200 points depending on how many series are active).
+- Results are transferred back and drawn on Canvas.
+- While streaming, worker posts are **debounced (~400ms)** so 100ms ticks do not flood the main thread.
+
+LTTB preserves visual shape (peaks/valleys) better than naive stride sampling for the **line** chart.
+
+## Canvas rendering explanation
+
+- All four chart types use a single `<canvas>` and the **2D context** — no SVG series nodes, no chart library.
+- **Line:** one `stroke()` per series.
+- **Bar / Scatter / Heatmap:** additional LOD/binning in `lib/chartLod.ts` so hundreds of thousands of input points do not become hundreds of thousands of draw calls.
+- Draw duration is timed with `performance.now()` around the paint path and recorded once per Raw/Optimized session for the current config.
+
+## Virtualized table explanation
+
+`VirtualTable` mounts only rows in the scroll viewport (+ overscan). DOM node count stays roughly constant whether the explorer shows thousands or hundreds of thousands of filtered rows.
+
+## Real-time 100ms stream explanation
+
+- **Start stream** appends one new sample per category every **100ms**.
+- Oldest points are trimmed so the in-memory buffer stays within the selected dataset size.
+- Stream does **not** re-run full `generateDataset`; it only creates four lightweight points per tick.
+- Worker downsampling is debounced while streaming.
+
+## Aggregation options (1m / 5m / 1h)
+
+Implemented in `lib/aggregate.ts` as real time-bucket **means** (per category):
+
+- **None** — no bucketing; Optimized still may apply LTTB for drawing
+- **1 minute / 5 minutes / 1 hour** — collapse points into fixed windows before typing/Worker
+
+**Aggregation ≠ LTTB:** aggregation changes the analytical resolution of the series; LTTB is a visual downsampling step for Canvas in Optimized mode.
+
+## Zoom / pan / time-range / filter controls
+
+- **Zoom:** mouse wheel over the chart (time-domain window)
+- **Pan:** drag on the chart
+- **Reset view:** restores full domain after zoom/pan
+- **Time range:** All / Last 5m / 15m / 1h / 6h — real filter on timestamps relative to the dataset max time
+- **Table category + text filter:** affect the Data Explorer (and use the current working set after range/aggregation)
+- **Series toggles:** which metrics feed the chart
+
+## Browser compatibility notes
+
+| Feature | Notes |
+|---------|--------|
+| Canvas2D, Workers, typed arrays | Modern Chromium, Firefox, Safari |
+| `performance.memory` | **Chrome / Edge** (non-standard). Elsewhere UI shows **Unavailable** |
+| Live FPS | Measured via `requestAnimationFrame`; capped by display refresh (e.g. 60 / 120 / 144 Hz) |
+| Transferable `ArrayBuffer` | Required for the Worker path |
+
+## Screenshots
+
+> Place screenshots in `docs/screenshots/` (or update paths below) after capturing locally.
+
+| View | Placeholder |
+|------|-------------|
+| Dashboard overview | `![Dashboard](docs/screenshots/dashboard.png)` |
+| Optimized line chart | `![Line Optimized](docs/screenshots/line-optimized.png)` |
+| Raw vs Optimized table | `![Benchmark](docs/screenshots/raw-vs-optimized.png)` |
+| Heatmap / Bar / Scatter | `![Chart types](docs/screenshots/chart-types.png)` |
+| Data Explorer | `![Table](docs/screenshots/data-explorer.png)` |
+
+*(Image files are not committed yet — paths are placeholders.)*
+
+## Next.js-specific architecture decisions
+
+- **App Router** with `/` → `/dashboard` redirect.
+- Interactive visualization lives in **Client Components** (`"use client"`): `Dashboard`, `CanvasChart`, `VirtualTable`, `PerfHUD`.
+- Pure logic stays in **`lib/`** and **`workers/`** (framework-independent).
+- **`/api/data`** returns a **small** sample (`generateDataset(100)`); the 500K visualization remains **client-side** by design.
+- Webpack `output.globalObject = 'self'` in `next.config.mjs` so Worker URLs work in production bundles.
+- Workers constructed with `new Worker(new URL('../workers/dataWorker.ts', import.meta.url))`.
+
+## Limitations / known browser API limitations
+
+- `performance.memory` is not available in all browsers → UI reports **Unavailable** (no invented MB).
+- Live FPS is **display-limited**, not a guaranteed processing throughput claim.
+- Raw mode with very large selected series can stall the main thread (warning above 100K selected points).
+- Heatmap/bar/scatter apply LOD/binning; they are not a substitute for statistical analysis tools.
+- Memory growth over hours and interaction latency budgets are **not** claimed unless measured (see PERFORMANCE.md).
+
+## Production deployment instructions
+
+1. `npm install`
+2. `npm run typecheck`
+3. `npx next build`
+4. `npm start` (or deploy the `.next` output to a Node host such as Vercel, or your own Node 18+ server)
+
+Environment: no secrets required for the default demo. Ensure the host serves the Worker chunk over HTTPS (or localhost) so module/worker loading is allowed.
+
+Example (Vercel): connect the repo and use the default Next.js build (`next build`) / start settings.
